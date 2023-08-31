@@ -23,7 +23,9 @@ import com.danielcaballero.bluetoothchat.presentation.BluetoothUiState
 fun DeviceScreeen(
     state: BluetoothUiState,
     onStartScan: () -> Unit,
-    onStopScan: () -> Unit
+    onStopScan: () -> Unit,
+    onStartServer: () -> Unit,
+    onDeviceClicked: (BluetoothDevice) -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxSize()
@@ -31,7 +33,7 @@ fun DeviceScreeen(
         BluetoothDeviceList(
             pairedDevices = state.pairedDevices,
             scannedDevices = state.scannedDevices,
-            onClick = {},
+            onClick = onDeviceClicked,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
@@ -45,6 +47,9 @@ fun DeviceScreeen(
             }
             Button(onClick = { onStopScan() }) {
                 Text(text = "Stop Scan")
+            }
+            Button(onClick = { onStartServer() }) {
+                Text(text = "Start Server")
             }
         }
 
