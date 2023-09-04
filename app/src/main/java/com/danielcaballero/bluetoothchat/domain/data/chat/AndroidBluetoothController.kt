@@ -10,11 +10,9 @@ import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import com.danielcaballero.bluetoothchat.domain.SERVICE_UUID
-import com.danielcaballero.bluetoothchat.domain.chat.BluetoothController
+import android.os.Build
 import com.danielcaballero.bluetoothchat.domain.chat.BluetoothDeviceDomain
 import com.danielcaballero.bluetoothchat.domain.chat.BluetoothStateReceiver
-import com.danielcaballero.bluetoothchat.domain.chat.ConnectionResult
 import com.danielcaballero.bluetoothchat.domain.chat.FoundDeviceReceiver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,14 +23,38 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.IOException
 import java.util.UUID
 
+
+interface BluetoothController {
+    val isConnected: StateFlow<Boolean>
+    val scannedDevices: StateFlow<List<BluetoothDeviceDomain>>
+    val pairedDevices: StateFlow<List<BluetoothDeviceDomain>>
+    val errors: SharedFlow<String>
+
+    fun startDiscovery()
+    fun stopDiscovery()
+
+    fun release()
+
+    fun startBluetoothServer(): Flow<ConnectionResult>
+
+    fun conneectToDevice(device: BluetoothDeviceDomain): Flow<ConnectionResult>
+
+    suspend fun trySendMessage(message: String): BluetoothMessage?
+
+    fun closeConnection()
+
+
+}
 
 @SuppressLint("MissingPermission")
 class AndroidBluetoothController(
@@ -45,6 +67,8 @@ class AndroidBluetoothController(
     private val bluetoothAdapter by lazy {
         bluetoothManager?.adapter
     }
+
+    private var dataTransferService: BluetoothDataTransferService? = null
 
     private val _scannedDevices = MutableStateFlow<List<BluetoothDeviceDomain>>(emptyList())
 
@@ -95,7 +119,18 @@ class AndroidBluetoothController(
     }
 
     override fun startDiscovery() {
-        if(!hasPermission(Manifest.permission.BLUETOOTH_SCAN)) {
+
+        if (
+            !hasPermission(Manifest.permission.BLUETOOTH_SCAN)
+            && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+        ) {
+            return
+        }
+
+        if (
+            !hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+            && Build.VERSION.SDK_INT <= Build.VERSION_CODES.S
+        ) {
             return
         }
 
@@ -110,7 +145,18 @@ class AndroidBluetoothController(
     }
 
     override fun stopDiscovery() {
-        if (!hasPermission(Manifest.permission.BLUETOOTH_SCAN)) {
+
+        if (
+            !hasPermission(Manifest.permission.BLUETOOTH_SCAN)
+            && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+        ) {
+            return
+        }
+
+        if (
+            !hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+            && Build.VERSION.SDK_INT <= Build.VERSION_CODES.S
+        ) {
             return
         }
 
@@ -126,7 +172,22 @@ class AndroidBluetoothController(
 
 
     override fun startBluetoothServer(): Flow<ConnectionResult> = flow {
-        if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) throw SecurityException("No BLUETOOTH_CONNECT permission")
+
+        if (
+            !hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
+            && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+        ) {
+            throw SecurityException("No BLUETOOTH permission")
+        }
+
+        if (
+            !hasPermission(Manifest.permission.BLUETOOTH_ADMIN)
+            && Build.VERSION.SDK_INT <= Build.VERSION_CODES.S
+        ) {
+            throw SecurityException("No BLUETOOTH permission")
+        }
+
+
 
         currentServerSocket = bluetoothAdapter?.listenUsingRfcommWithServiceRecord(
             "chat_service",
@@ -142,9 +203,15 @@ class AndroidBluetoothController(
                 null
 
             }
-            emit(ConnectionResult.ConnectionEstablished)
+            emit(ConnectionResult.ConnectionStablished)
             currentClientSocket?.let {
                 currentServerSocket?.close()
+                val service = BluetoothDataTransferService(it)
+                dataTransferService = service
+
+                emitAll(
+                    service.listenForIncomingMessagees()
+                        .map { ConnectionResult.TransferSucceded(it) })
             }
         }
     }.onCompletion { closeConnection() }.flowOn(Dispatchers.IO)
@@ -152,10 +219,21 @@ class AndroidBluetoothController(
     private var currentServerSocket: BluetoothServerSocket? = null
     private var currentClientSocket: BluetoothSocket? = null
 
-    override fun conneectToDevice(device: com.danielcaballero.bluetoothchat.domain.chat.BluetoothDevice): Flow<ConnectionResult> =
+    override fun conneectToDevice(device: BluetoothDeviceDomain): Flow<ConnectionResult> =
         flow {
-            if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
-                throw SecurityException("No BLUETOOTH_CONNECT permission")
+
+            if (
+                !hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
+                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+            ) {
+                throw SecurityException("No BLUETOOTH permission")
+            }
+
+            if (
+                !hasPermission(Manifest.permission.BLUETOOTH_ADMIN)
+                && Build.VERSION.SDK_INT <= Build.VERSION_CODES.S
+            ) {
+                throw SecurityException("No BLUETOOTH permission")
             }
 
             val bluetoothDevice = bluetoothAdapter?.getRemoteDevice(device.address)
@@ -175,7 +253,14 @@ class AndroidBluetoothController(
             currentClientSocket?.let { socket ->
                 try {
                     socket.connect()
-                    emit(ConnectionResult.ConnectionEstablished)
+                    emit(ConnectionResult.ConnectionStablished)
+
+                    BluetoothDataTransferService(socket).also {
+                        dataTransferService = it
+                        emitAll(
+                            it.listenForIncomingMessagees()
+                                .map { ConnectionResult.TransferSucceded(it) })
+                    }
                 } catch (e: IOException) {
                     socket.close()
                     currentClientSocket = null
@@ -183,6 +268,38 @@ class AndroidBluetoothController(
                 }
             }
         }.onCompletion { closeConnection() }.flowOn(Dispatchers.IO)
+
+    override suspend fun trySendMessage(message: String): BluetoothMessage? {
+        if (
+            !hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
+            && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+        ) {
+            return null
+        }
+
+        if (
+            !hasPermission(Manifest.permission.BLUETOOTH_ADMIN)
+            && Build.VERSION.SDK_INT <= Build.VERSION_CODES.S
+        ) {
+            return null
+        }
+
+        if(dataTransferService == null) {
+            return null
+        }
+
+        val bluetoothMessagee = BluetoothMessage(
+            messagee = message,
+            senderName = bluetoothAdapter?.name ?: "Unknown name",
+            isFromLocalUser = true
+        )
+
+        dataTransferService?.sendMessage(bluetoothMessagee.toByteArray())
+
+        return bluetoothMessagee
+
+
+    }
 
     override fun closeConnection() {
         currentClientSocket?.close()
@@ -192,9 +309,21 @@ class AndroidBluetoothController(
     }
 
     private fun updatePairedDevices() {
-        if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+
+        if (
+            !hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
+            && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+        ) {
             return
         }
+
+        if (
+            !hasPermission(Manifest.permission.BLUETOOTH_ADMIN)
+            && Build.VERSION.SDK_INT <= Build.VERSION_CODES.S
+        ) {
+            return
+        }
+
         bluetoothAdapter
             ?.bondedDevices
             ?.map { it.toBluetoothDeviceDomain() }
@@ -206,6 +335,18 @@ class AndroidBluetoothController(
     private fun hasPermission(permission: String): Boolean {
         return context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
     }
+
+    companion object {
+        const val SERVICE_UUID = "27b7d1da-08c7-4505-a6d1-2459987e5e2d"
+    }
+}
+
+@SuppressLint("MissingPermission")
+fun BluetoothDevice.toBluetoothDeviceDomain(): BluetoothDeviceDomain {
+    return BluetoothDeviceDomain(
+        name = name,
+        address = address
+    )
 }
 
 

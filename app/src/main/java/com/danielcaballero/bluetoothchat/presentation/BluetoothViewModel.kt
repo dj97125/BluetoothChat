@@ -2,10 +2,11 @@ package com.danielcaballero.bluetoothchat.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.danielcaballero.bluetoothchat.domain.chat.BluetoothController
 import com.danielcaballero.bluetoothchat.domain.chat.BluetoothDevice
 import com.danielcaballero.bluetoothchat.domain.chat.BluetoothDeviceDomain
-import com.danielcaballero.bluetoothchat.domain.chat.ConnectionResult
+import com.danielcaballero.bluetoothchat.domain.data.chat.BluetoothController
+import com.danielcaballero.bluetoothchat.domain.data.chat.BluetoothMessage
+import com.danielcaballero.bluetoothchat.domain.data.chat.ConnectionResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class BluetoothUiState(
@@ -24,7 +26,8 @@ data class BluetoothUiState(
     val pairedDevices: List<BluetoothDevice> = emptyList(),
     val isConnected: Boolean = false,
     val isConnecting: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val message: List<BluetoothMessage> = emptyList()
 
 )
 
@@ -43,7 +46,8 @@ class BluetoothViewModel @Inject constructor(
 
         state.copy(
             scannedDevices = scannedDevices,
-            pairedDevices = pairedDeevices
+            pairedDevices = pairedDeevices,
+            message = if (state.isConnected) state.message else emptyList()
         )
 
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), _state.value)
@@ -52,7 +56,8 @@ class BluetoothViewModel @Inject constructor(
 
     init {
         bluetoothController.isConnected.onEach { isConnected ->
-            _state.update { it.copy(isConnected = isConnected) }
+            _state.update {
+                it.copy(isConnected = isConnected) }
 
         }.launchIn(viewModelScope)
 
@@ -97,10 +102,23 @@ class BluetoothViewModel @Inject constructor(
 
     }
 
+    fun sendMessagee(message: String) {
+        viewModelScope.launch {
+            val bluetoothMessage = bluetoothController.trySendMessage(message)
+            bluetoothMessage?.let {
+                _state.update {
+                    it.copy(
+                        message = it.message + bluetoothMessage
+                    )
+                }
+            }
+        }
+    }
+
     private fun Flow<ConnectionResult>.listen(): Job {
         return onEach { result ->
             when (result) {
-                ConnectionResult.ConnectionEstablished -> {
+                ConnectionResult.ConnectionStablished -> {
                     _state.update {
                         it.copy(
                             isConnected = true,
@@ -116,6 +134,14 @@ class BluetoothViewModel @Inject constructor(
                             isConnected = false,
                             isConnecting = false,
                             errorMessage = result.message
+                        )
+                    }
+                }
+
+                is ConnectionResult.TransferSucceded -> {
+                    _state.update {
+                        it.copy(
+                            message = it.message + result.message
                         )
                     }
                 }

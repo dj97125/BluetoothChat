@@ -1,8 +1,8 @@
 package com.danielcaballero.bluetoothchat.di
 
 import android.content.Context
-import com.danielcaballero.bluetoothchat.domain.chat.BluetoothController
 import com.danielcaballero.bluetoothchat.domain.data.chat.AndroidBluetoothController
+import com.danielcaballero.bluetoothchat.domain.data.chat.BluetoothController
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
